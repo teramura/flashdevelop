@@ -154,15 +154,9 @@ namespace ASCompletion.Completion
                         break;
 
                     case ':':
-                        if (ctx.CurrentModel.haXe && prevValue == '@')
-                        {
-                            return HandleMetadataCompletion(autoHide);
-                        }
-                        if (features.hasEcmaTyping)
-                        {
-                            return HandleColonCompletion(Sci, "", autoHide);
-                        }
-                        else break;
+                        if (ctx.CurrentModel.haXe && prevValue == '@') return HandleMetadataCompletion(autoHide);
+                        if (features.hasEcmaTyping) return HandleColonCompletion(Sci, "", autoHide);
+                        break;
 
                     case '<':
                         if (features.hasGenerics && position > 2)
@@ -173,13 +167,13 @@ namespace ASCompletion.Completion
                                 return HandleColonCompletion(Sci, "", autoHide);
                             return false;
                         }
-                        else break;
+                        break;
 
                     case '(':
                     case ',':
                         if (!ASContext.CommonSettings.DisableCallTip)
                             return HandleFunctionCompletion(Sci, autoHide);
-                        else return false;
+                        return false;
 
                     case ')':
                         if (UITools.CallTip.CallTipActive) UITools.CallTip.Hide();
@@ -609,11 +603,9 @@ namespace ASCompletion.Completion
             var position = ExpressionEndPosition(sci, sci.CurrentPos);
             var result = GetExpressionType(sci, position, false, true);
 
+            var ctx = ASContext.Context;
             // browse to package folder
-            if (result.IsPackage && result.InFile != null)
-            {
-                return ASContext.Context.BrowseTo(result.InFile.Package);
-            }
+            if (result.IsPackage && result.InFile != null) return ctx.BrowseTo(result.InFile.Package);
 
             // open source and show declaration
             if (!result.IsNull())
@@ -625,14 +617,14 @@ namespace ASCompletion.Completion
                 return OpenDocumentToDeclaration(sci, result);
             }
             // show overridden method
-            else if (ASContext.Context.CurrentMember != null 
-                && ASContext.Context.Features.overrideKey != null
-                && sci.GetWordFromPosition(position) == ASContext.Context.Features.overrideKey)
+            if (ctx.CurrentMember != null
+                && ctx.Features.overrideKey != null
+                && sci.GetWordFromPosition(position) == ctx.Features.overrideKey)
             {
-                MemberModel member = ASContext.Context.CurrentMember;
+                MemberModel member = ctx.CurrentMember;
                 if ((member.Flags & FlagType.Override) > 0)
                 {
-                    ClassModel tmpClass = ASContext.Context.CurrentClass;
+                    ClassModel tmpClass = ctx.CurrentClass;
                     if (tmpClass != null)
                     {
                         tmpClass.ResolveExtends();
@@ -1683,8 +1675,7 @@ namespace ASCompletion.Completion
 
         public static void FunctionContextResolved(ScintillaControl sci, ASExpr expr, MemberModel method, ClassModel inClass, bool showTip)
         {
-            if (string.IsNullOrEmpty(method?.Name)) 
-                return;
+            if (string.IsNullOrEmpty(method?.Name)) return;
             if (calltipMember != null && calltipMember.Name == method.Name)
             {
                 // use FD-extracted comments
@@ -2586,7 +2577,7 @@ namespace ASCompletion.Completion
         /// <returns>Class/member struct</returns>
         private static ASResult EvalExpression(string expression, ASExpr context, FileModel inFile, ClassModel inClass, bool complete, bool asFunction)
         {
-            return EvalExpression(expression, context, inFile, inClass, complete, asFunction, true);
+            return ASContext.Context.CodeComplete.EvalExpression(expression, context, inFile, inClass, complete, asFunction, true);
         }
 
         /// <summary>
@@ -2600,34 +2591,25 @@ namespace ASCompletion.Completion
         /// <param name="asFunction"></param>
         /// <param name="filterVisibility"></param>
         /// <returns>Class/member struct</returns>
-        private static ASResult EvalExpression(string expression, ASExpr context, FileModel inFile, ClassModel inClass, bool complete, bool asFunction, bool filterVisibility)
+        protected virtual ASResult EvalExpression(string expression, ASExpr context, FileModel inFile, ClassModel inClass, bool complete, bool asFunction, bool filterVisibility)
         {
             var notFound = new ASResult {Context = context};
             if (string.IsNullOrEmpty(expression)) return notFound;
-            var value = expression.TrimEnd('.');
-            if (context.SubExpressions?.Count == 1) value = value.Replace(char.IsLetter(value[0]) ? ".#0~" : "#0~", context.SubExpressions.First());
-            var ctx = ASContext.Context;
-            var features = ctx.Features;
-            if (!string.IsNullOrEmpty(context.WordBefore) && features.OtherOperators.Contains(context.WordBefore))
-                value = context.WordBefore + " " + value;
-
-            var type = ctx.ResolveToken(value, inClass.InFile);
-            if (!type.IsVoid()) return new ASResult {Type = type, Context = context, InClass = type, InFile = type.InFile, Path = context.Value, IsStatic = context.WordBefore == "new"};
-            if (expression.StartsWithOrdinal(features.dot))
+            if (expression[0] == '.')
             {
-                if (expression.StartsWithOrdinal(features.dot + "#")) expression = expression.Substring(1);
+                if (expression.StartsWithOrdinal(".#")) expression = expression.Substring(1);
                 else if (context.Separator == "\"") expression = "\"" + expression;
                 else return notFound;
             }
 
+            var ctx = ASContext.Context;
+            var features = ctx.Features;
             var tokens = Regex.Split(expression, Regex.Escape(features.dot));
 
             // eval first token
             var token = tokens[0];
             if (token.Length == 0) return notFound;
             if (asFunction && tokens.Length == 1) token += "(";
-            type = ctx.ResolveToken(token, inClass.InFile);
-            if (!type.IsVoid()) return EvalTail(context, inFile, new ASResult {Type = type}, tokens, complete, filterVisibility) ?? notFound;
             ASResult head = null;
             if (token[0] == '#')
             {
@@ -2645,12 +2627,7 @@ namespace ASCompletion.Completion
                     Regex re_dot = new Regex("[\\s]*" + Regex.Escape(features.dot) + "[\\s]*");
                     subExpr = re_dot.Replace(re_whiteSpace.Replace(m.Value, " "), features.dot).Trim();
                     int space = subExpr.LastIndexOf(' ');
-                    if (space > 0)
-                    {
-                        string trash = subExpr.Substring(0, space).TrimEnd();
-                        subExpr = subExpr.Substring(space + 1);
-                        if (trash.EndsWithOrdinal("as")) subExpr += features.dot + "#";
-                    }
+                    if (space > 0) subExpr = subExpr.Substring(space + 1);
                     // eval sub expression
                     head = EvalExpression(subExpr, subContext, inFile, inClass, true, false);
                     if (head.Member != null)
@@ -2662,8 +2639,13 @@ namespace ASCompletion.Completion
                     head = EvalVariable(token, context, inFile, inClass);
                 }
             }
-            else if (token.Contains("<")) head = new ASResult {Type = ctx.ResolveType(token, inFile)};
-            else head = EvalVariable(token, context, inFile, inClass); // regular eval
+            else
+            {
+                var type = ctx.ResolveToken(token, inClass.InFile);
+                if (!type.IsVoid()) return EvalTail(context, inFile, new ASResult {Type = type}, tokens, complete, filterVisibility) ?? notFound;
+                if (token.Contains("<")) head = new ASResult {Type = ctx.ResolveType(token, inFile)};
+                else head = EvalVariable(token, context, inFile, inClass); // regular eval
+            }
 
             // no head, exit
             if (head.IsNull()) return notFound;
@@ -2676,12 +2658,12 @@ namespace ASCompletion.Completion
                 return notFound;
 
             // resolve
-            ASResult result = EvalTail(context, inFile, head, tokens, complete, filterVisibility);
+            var result = EvalTail(context, inFile, head, tokens, complete, filterVisibility);
 
             // if failed, try as qualified class name
             if ((result == null || result.IsNull()) && tokens.Length > 1) 
             {
-                ClassModel qualif = ctx.ResolveType(expression, null);
+                var qualif = ctx.ResolveType(expression, null);
                 if (!qualif.IsVoid())
                 {
                     result = new ASResult();
@@ -2694,16 +2676,15 @@ namespace ASCompletion.Completion
             return result ?? notFound;
         }
 
-        static ASResult EvalTail(ASExpr context, FileModel inFile, ASResult head, string[] tokens, bool complete, bool filterVisibility)
+        static ASResult EvalTail(ASExpr context, FileModel inFile, ASResult head, IList<string> tokens, bool complete, bool filterVisibility)
         {
             // eval tail
-            int n = tokens.Length;
+            int n = tokens.Count;
             if (!complete) n--;
             // context
             IASContext ctx = ASContext.Context;
             ContextFeatures features = ctx.Features;
             ASResult step = head;
-            ClassModel resultClass = head.Type;
             // look for static or dynamic members?
             FlagType mask = head.IsStatic ? FlagType.Static : FlagType.Dynamic;
             // members visibility
@@ -2712,15 +2693,14 @@ namespace ASCompletion.Completion
             Visibility acc = ctx.TypesAffinity(curClass, step.Type);
 
             // explore
-            bool inE4X = false;
-            string token = tokens[0];
-            string path = token;
-            step.Path = token;
+            var inE4X = false;
+            var path = tokens[0];
+            step.Path = path;
             step.Context = context;
 
             for (int i = 1; i < n; i++)
             {
-                token = tokens[i];
+                var token = tokens[i];
                 path += features.dot + token;
                 step.Path = path;
 
@@ -2730,12 +2710,12 @@ namespace ASCompletion.Completion
                     if (i == n - 1)
                         return step;
                     // this means 2 dots in the expression: consider as E4X expression
-                    if (ctx.Features.hasE4X && IsXmlType(step.Type) && i < n - 1)
+                    if (features.hasE4X && IsXmlType(step.Type) && i < n - 1)
                     {
                         inE4X = true;
                         step = new ASResult();
                         step.Member = new MemberModel(token, "XMLList", FlagType.Variable | FlagType.Dynamic | FlagType.AutomaticVar, Visibility.Public);
-                        step.Type = ctx.ResolveType(ctx.Features.objectKey, null);
+                        step.Type = ctx.ResolveType(features.objectKey, null);
                         acc = Visibility.Public;
                     }
                     else return null;
@@ -2748,7 +2728,7 @@ namespace ASCompletion.Completion
                 }
                 else if (step.Type != null && !step.Type.IsVoid())
                 {
-                    resultClass = step.Type;
+                    var resultClass = step.Type;
                     // handle typed indexes automatic typing
                     if (token[0] == '#' && step.InClass != null && step.Member != null
                         && step.InClass.IndexType == step.Member.Type)
@@ -2868,7 +2848,9 @@ namespace ASCompletion.Completion
                         if (vars.Count > 0)
                         {
                             var checkFunction = local.SubExpressions != null && local.SubExpressions.Count == 1
-                                           && !string.IsNullOrEmpty(local.Value) && local.Value.IndexOf('.') == local.Value.IndexOf(".#0~");
+                                && !string.IsNullOrEmpty(local.Value) && local.Value.IndexOf('.') == local.Value.IndexOfOrdinal(".#0~")
+                                // array access check
+                                && local.SubExpressions[0][0] != '[';
                             MemberModel var = null;
                             if (vars.Count > 1)
                             {
@@ -2886,12 +2868,9 @@ namespace ASCompletion.Completion
                                     if (var.Flags.HasFlag(FlagType.LocalVar)) context.CodeComplete.InferVariableType(local, var);
                                     else if (var.Flags.HasFlag(FlagType.ParameterVar)) context.CodeComplete.InferParameterVarType(var);
                                 }
-
-                                if (var.Flags.HasFlag(FlagType.Function))
-                                    result.Type = context.ResolveType("Function", null);
-                                else
-                                    result.Type = ResolveType(var.Type, inFile);
-
+                                if (string.IsNullOrEmpty(var.Type)) result.Type = context.ResolveType(features.objectKey, null);
+                                else if (var.Flags.HasFlag(FlagType.Function)) result.Type = context.ResolveType("Function", null);
+                                else result.Type = ResolveType(var.Type, inFile);
                                 return result;
                             }
                         }
@@ -3048,7 +3027,7 @@ namespace ASCompletion.Completion
         {
             // is it a simple affectation inference?
             var text = sci.GetLine(var.LineFrom);
-            var m = Regex.Match(text, "\\s*var\\s+" + var.Name + "\\s*=([^;]+)");
+            var m = Regex.Match(text, "=([^;]+)");
             if (!m.Success) return;
             var rvalue = m.Groups[1];
             if (rvalue.Length <= 1) return;
@@ -3057,14 +3036,14 @@ namespace ASCompletion.Completion
 
         protected virtual void InferVariableType(ScintillaControl sci, string declarationLine, int rvalueStart, ASExpr local, MemberModel var)
         {
-            int p = declarationLine.IndexOf(';');
+            var p = declarationLine.IndexOf(';');
             var text = declarationLine.TrimEnd();
             if (p < 0) p = text.Length;
             if (text.EndsWith('(')) p--;
             // resolve expression
-            ASExpr expr = GetExpression(sci, sci.PositionFromLine(var.LineFrom) + p, true);
+            var expr = GetExpression(sci, sci.PositionFromLine(var.LineFrom) + p, true);
             if (string.IsNullOrEmpty(expr.Value)) return;
-            ASResult result = EvalExpression(expr.Value, expr, ASContext.Context.CurrentModel, ASContext.Context.CurrentClass, true, false);
+            var result = EvalExpression(expr.Value, expr, ASContext.Context.CurrentModel, ASContext.Context.CurrentClass, true, false);
             if (result.IsNull()) return;
             if (result.Type != null && !result.Type.IsVoid())
             {
@@ -3454,7 +3433,7 @@ namespace ASCompletion.Completion
             while (position > minPos)
             {
                 position--;
-                if (context.CodeComplete.IsRegexStyle(sci, position))
+                if (arrCount == 0 && braCount == 0 && parCount == 0 && context.CodeComplete.IsRegexStyle(sci, position))
                 {
                     inRegex = true;
                     positionExpression = position;
@@ -3466,14 +3445,11 @@ namespace ASCompletion.Completion
                     // end of regex literal
                     if (inRegex)
                     {
-                        inRegex = false;
-                        if (arrCount == 0 && braCount == 0 && parCount == 0)
-                        {
-                            if (expression.SubExpressions == null) expression.SubExpressions = new List<string>();
-                            expression.SubExpressions.Add("");
-                            sb.Insert(0, "#RegExp.#" + (subCount++) + "~");
-                            break;
-                        }
+                        if (expression.SubExpressions == null) expression.SubExpressions = new List<string>();
+                        expression.SubExpressions.Add("");
+                        sb.Insert(0, "#RegExp.#" + (subCount++) + "~");
+                        expression.Separator = ";";
+                        break;
                     }
                     var c2 = c;
                     c = (char)sci.CharAt(position);
@@ -3483,22 +3459,38 @@ namespace ASCompletion.Completion
                         continue;
                     }
                     // array access
-                    if (c == ']')
+                    if (c == ']' && parCount == 0)
                     {
-                        arrCount++;
                         ignoreWhiteSpace = false;
+                        if (arrCount == 0) // start sub-expression
+                        {
+                            if (expression.SubExpressions == null) expression.SubExpressions = new List<string>();
+                            sbSub.Clear();
+                        }
+                        arrCount++;
                     }
-                    else if (c == '[')
+                    else if (c == '[' && parCount == 0)
                     {
                         arrCount--;
                         if (arrCount == 0 && braCount == 0)
                         {
                             positionExpression = position;
-                            if (sbSub.Length > 0) sbSub.Insert(0, '[');
                             if (parCount == 0)
                             {
-                                sb.Insert(0, "." + sbSub);
+                                sbSub.Insert(0, c);
+                                expression.SubExpressions.Add(sbSub.ToString());
                                 sbSub.Clear();
+                                sb.Insert(0, ".#" + (subCount++) + "~");
+                                var pos = position - 1;
+                                var word = GetWordLeft(sci, ref pos);
+                                // for example: return [].<complete>
+                                if (context.Features.codeKeywords.Contains(word))
+                                {
+                                    expression.Separator = ";";
+                                    expression.WordBefore = word;
+                                    expression.WordBeforePosition = pos + 1;
+                                    break;
+                                }
                             }
                             continue;
                         }
@@ -3551,17 +3543,17 @@ namespace ASCompletion.Completion
                         {
                             positionExpression = position;
                             sbSub.Insert(0, c);
-                            int testPos = position - 1;
-                            string testWord = GetWordLeft(sci, ref testPos);
                             expression.SubExpressions.Add(sbSub.ToString());
                             sbSub.Clear();
                             sb.Insert(0, ".#" + (subCount++) + "~"); // method call or sub expression
-                            if (testWord == "return" || testWord == "case" || testWord == "default")
+                            var pos = position - 1;
+                            var word = GetWordLeft(sci, ref pos);
+                            // AS3, AS2, Loom ex: return (a as B).<complete>
+                            if (context.Features.codeKeywords.Contains(word))
                             {
-                                // AS3, AS2, Loom ex: return (a as B).<complete>
                                 expression.Separator = ";";
-                                expression.WordBefore = testWord;
-                                expression.WordBeforePosition = testPos + 1;
+                                expression.WordBefore = word;
+                                expression.WordBeforePosition = pos + 1;
                                 break;
                             }
                             continue;
@@ -3599,7 +3591,7 @@ namespace ASCompletion.Completion
                         if (parCount == 0) // start sub-expression
                         {
                             if (expression.SubExpressions == null) expression.SubExpressions = new List<string>();
-                            sbSub = new StringBuilder();
+                            sbSub.Clear();
                         }
                         parCount++;
                     }
@@ -3887,9 +3879,16 @@ namespace ASCompletion.Completion
                     }
                 }
             }
+            
+            var value = sb.ToString().TrimStart('.');
+            if (features.hasE4X && value.Length >= 2 && value[0] == '<' && value[value.Length - 1]  == '>')
+            {
+                expression.Separator = ";";
+                value = "</>";
+            }
 
             // check if there is a particular keyword
-            if (expression.Separator == " ")
+            if (expression.Separator == " " && position > 0)
             {
                 expression.WordBefore = GetWordLeft(sci, ref position);
                 if (expression.WordBefore.Length > 0) expression.WordBeforePosition = position + 1;
@@ -3902,13 +3901,6 @@ namespace ASCompletion.Completion
                     expression.Separator = @operator;
                     expression.SeparatorPosition = position + 1;
                 }
-            }
-
-            var value = sb.ToString().TrimStart('.');
-            if (features.hasE4X && value.Length >= 2 && value[0] == '<' && value[value.Length - 1]  == '>')
-            {
-                expression.Separator = ";";
-                value = "</>";
             }
 
             expression.Value = value;
@@ -4269,18 +4261,13 @@ namespace ASCompletion.Completion
                 ASContext.Context.UpdateContext(line);
             try
             {
-                ASExpr expr = GetExpression(sci, position, ignoreWhiteSpace);
+                var expr = GetExpression(sci, position, ignoreWhiteSpace);
                 expr.LocalVars = ParseLocalVars(expr);
-                if (string.IsNullOrEmpty(expr.Value))
-                {
-                    ASResult res = new ASResult();
-                    res.Context = expr;
-                    return res;
-                }
-                FileModel aFile = ASContext.Context.CurrentModel;
-                ClassModel aClass = ASContext.Context.CurrentClass;
+                if (string.IsNullOrEmpty(expr.Value)) return new ASResult {Context = expr};
+                var aFile = ASContext.Context.CurrentModel;
+                var aClass = ASContext.Context.CurrentClass;
                 // Expression before cursor
-                return EvalExpression(expr.Value, expr, aFile, aClass, true, false, filterVisibility);
+                return ASContext.Context.CodeComplete.EvalExpression(expr.Value, expr, aFile, aClass, true, false, filterVisibility);
             }
             finally
             {
@@ -4528,8 +4515,11 @@ namespace ASCompletion.Completion
             return ExpressionEndPosition(sci, position, endPosition);
         }
 
-        public static int ExpressionEndPosition(ScintillaControl sci, int startPos, int endPos)
+        public static int ExpressionEndPosition(ScintillaControl sci, int startPos, int endPos) => ExpressionEndPosition(sci, startPos, endPos, false);
+
+        public static int ExpressionEndPosition(ScintillaControl sci, int startPos, int endPos, bool skipWhiteSpace)
         {
+            var ctx = ASContext.Context;
             var result = startPos;
             var statementEnd = startPos;
             var characterClass = ScintillaControl.Configuration.GetLanguage(sci.ConfigurationLanguage).characterclass.Characters;
@@ -4546,7 +4536,7 @@ namespace ASCompletion.Completion
                     statementEnd++;
                     continue;
                 }
-                if (sci.PositionIsInString(statementEnd))
+                if (sci.PositionIsInString(statementEnd) && !ctx.CodeComplete.IsStringInterpolationStyle(sci, statementEnd))
                 {
                     statementEnd++;
                     result = statementEnd;
@@ -4582,7 +4572,12 @@ namespace ASCompletion.Completion
                 {
                     if (characterClass.Contains(c))
                     {
-                        if (hadWS) break;
+                        if (skipWhiteSpace)
+                        {
+                            skipWhiteSpace = false;
+                            hadWS = false;
+                        }
+                        else if (hadWS) break;
                         stop = true;
                         result = statementEnd;
                     }
